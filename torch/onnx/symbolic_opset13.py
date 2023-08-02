@@ -1132,3 +1132,56 @@ def quantized_conv_transpose3d(
     )
 
     return symbolic_helper.quantize_helper(g, output, op_scale, op_zero_point)
+
+@_onnx_symbolic("aten::pixel_unshuffle")
+@symbolic_helper.parse_args("v", "i")
+@_beartype.beartype
+def pixel_unshuffle(g: jit_utils.GraphContext, self, downscale_factor):
+    dims = symbolic_helper._get_tensor_sizes(self)
+    if len(dims) != 4:
+        return symbolic_helper._unimplemented(
+            "pixel_shuffle", "only support 4d input", self
+        )
+    if any(i is None for i in dims[1:]):
+        print("Using SpaceToDepth(opset=13) for pixel_unshuffle")
+        space2depth = g.op("SpaceToDepth", self, blocksize_i=downscale_factor)
+        return space2depth
+    else:
+        output_channel = dims[1] * downscale_factor * downscale_factor
+        after_view = symbolic_helper._reshape_helper(
+            g,
+            self,
+            g.op(
+                "Constant",
+                value_t=torch.tensor(
+                    [
+                        -1,
+                        dims[1],
+                        dims[2] // downscale_factor,
+                        downscale_factor,
+                        dims[3] // downscale_factor,
+                        downscale_factor,
+                    ]
+                ),
+            ),
+            allowzero=0,
+        )
+        after_transpose = g.op("Transpose", after_view, perm_i=[0, 1, 3, 5, 2, 4])
+        return symbolic_helper._reshape_helper(
+            g,
+            after_transpose,
+            g.op(
+                "Constant",
+                value_t=torch.tensor(
+                    [
+                        -1,
+                        output_channel,
+                        dims[2] // downscale_factor,
+                        dims[3] // downscale_factor,
+                    ]
+                ),
+            ),
+            allowzero=0,
+        )
+
+
